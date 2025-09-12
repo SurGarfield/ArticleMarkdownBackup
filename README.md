@@ -15,12 +15,6 @@
 3. **格式转换** - 将HTML格式的文章转换为Markdown格式
 4. **文件管理** - 支持上传备份文件和选择服务器备份文件
 
-## 安装方法
-
-1. 下载插件文件夹到Typecho的`usr/plugins/`目录
-2. 确保插件文件夹名为`ArticleMarkdownBackup`
-3. 在Typecho后台启用插件
-
 ## 使用说明
 
 ### 备份功能
