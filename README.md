@@ -49,7 +49,7 @@
 
 -------------
 
-# 新增内容
+# 1.2.0 新增内容（如不需要可以在[此处](https://github.com/SurGarfield/ArticleMarkdownBackup/releases)下载1.1.0版本)
 
 ## 1.文章Cid管理策略（默认关闭）
 - 进入后台 → 插件 → “Article Markdown Backup”插件 → 设置
