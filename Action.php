@@ -461,6 +461,85 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
         // 重定向回管理页面
         $this->response->redirect(Typecho_Common::url('extending.php?panel=ArticleMarkdownBackup/manage.php', $this->widget('Widget_Options')->adminUrl));
     }
+
+    /**
+     * 删除勾选的附件
+     */
+    public function deleteSelectedAttachments()
+    {
+        try {
+            $cids = $this->request->getArray('cid');
+            if (empty($cids)) {
+                throw new Exception('未选择任何附件');
+            }
+            $db = Typecho_Db::get();
+            $ids = array_map('intval', $cids);
+            foreach ($ids as $id) {
+                $db->query($db->delete('table.contents')->where('cid = ? AND type = ?', $id, 'attachment'));
+            }
+            $this->widget('Widget_Notice')->set(_t('已删除 %d 个附件', count($ids)), 'success');
+        } catch (Exception $e) {
+            error_log('ArticleMarkdownBackup deleteSelectedAttachments error: ' . $e->getMessage());
+            $this->widget('Widget_Notice')->set(_t('删除失败: %s', $e->getMessage()), 'error');
+        }
+        $this->response->redirect(Typecho_Common::url('extending.php?panel=ArticleMarkdownBackup/manage.php&tab=cid', $this->widget('Widget_Options')->adminUrl));
+    }
+    
+    /**
+     * 设置 contents 表自增ID/序列
+     */
+    public function setAutoIncrement()
+    {
+        try {
+            $value = intval($this->request->get('value'));
+            if ($value <= 0) {
+                throw new Exception('无效的自增值');
+            }
+
+            $db = Typecho_Db::get();
+            $adapter = $db->getAdapter();
+            $driver = method_exists($adapter, 'getDriver') ? $adapter->getDriver() : '';
+            $prefix = $db->getPrefix();
+
+            if (stripos($driver, 'pgsql') !== false) {
+                $seq = $prefix . 'contents_seq';
+                $db->query("SELECT setval('{$seq}', {$value}, true)");
+            } elseif (stripos($driver, 'sqlite') !== false) {
+                $table = $prefix . 'contents';
+                // sqlite_sequence 可能不存在
+                @$db->query("UPDATE sqlite_sequence SET seq = {$value} WHERE name = '{$table}'");
+            } else {
+                $table = $prefix . 'contents';
+                $db->query("ALTER TABLE `{$table}` AUTO_INCREMENT = {$value}");
+            }
+
+            $this->widget('Widget_Notice')->set(_t('已设置自增ID为 %d', $value), 'success');
+        } catch (Exception $e) {
+            error_log('ArticleMarkdownBackup setAutoIncrement error: ' . $e->getMessage());
+            $this->widget('Widget_Notice')->set(_t('设置失败: %s', $e->getMessage()), 'error');
+        }
+
+        $this->response->redirect(Typecho_Common::url('extending.php?panel=ArticleMarkdownBackup/manage.php&tab=cid', $this->widget('Widget_Options')->adminUrl));
+    }
+
+    /**
+     * 一键删除所有附件
+     */
+    public function deleteAllAttachments()
+    {
+        try {
+            $db = Typecho_Db::get();
+            $countObj = $db->fetchObject($db->select(['COUNT(cid)' => 'num'])->from('table.contents')->where('type = ?', 'attachment'));
+            $db->query($db->delete('table.contents')->where('type = ?', 'attachment'));
+            $count = $countObj ? (int)$countObj->num : 0;
+            $this->widget('Widget_Notice')->set(_t('已删除 %d 个附件', $count), 'success');
+        } catch (Exception $e) {
+            error_log('ArticleMarkdownBackup deleteAllAttachments error: ' . $e->getMessage());
+            $this->widget('Widget_Notice')->set(_t('删除失败: %s', $e->getMessage()), 'error');
+        }
+
+        $this->response->redirect(Typecho_Common::url('extending.php?panel=ArticleMarkdownBackup/manage.php&tab=cid', $this->widget('Widget_Options')->adminUrl));
+    }
     
     /**
      * 动作分发函数
@@ -490,9 +569,81 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
             case 'convertSelected':
                 $this->convertSelected();
                 break;
+            case 'setAutoIncrement':
+                $this->setAutoIncrement();
+                break;
+            case 'deleteAllAttachments':
+                $this->deleteAllAttachments();
+                break;
+            case 'deleteSelectedAttachments':
+                $this->deleteSelectedAttachments();
+                break;
+            case 'setStrategy':
+                $this->setStrategy();
+                break;
+            case 'clearLog':
+                $this->clearLogAction();
+                break;
             default:
                 $this->response->redirect($this->widget('Widget_Options')->adminUrl);
                 break;
         }
+    }
+
+    /**
+     * 清空插件日志动作
+     */
+    private function clearLogAction()
+    {
+        try {
+            $logFile = __DIR__ . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR . 'cid-sync.log';
+            if (file_exists($logFile)) {
+                @file_put_contents($logFile, '');
+            }
+            $this->widget('Widget_Notice')->set(_t('日志已清空'), 'success');
+        } catch (Exception $e) {
+            error_log('ArticleMarkdownBackup clearLog error: ' . $e->getMessage());
+            $this->widget('Widget_Notice')->set(_t('清空失败: %s', $e->getMessage()), 'error');
+        }
+        $this->response->redirect(Typecho_Common::url('extending.php?panel=ArticleMarkdownBackup/manage.php&tab=cid', $this->widget('Widget_Options')->adminUrl));
+    }
+
+    /**
+     * 设置 CID 连贯策略（集成在 CID 页面）
+     */
+    private function setStrategy()
+    {
+        try {
+            $allow = ['skip', 'ignore', 'grow_skip', 'grow_ignore'];
+            $strategy = $this->request->get('cidStrategy');
+            if (!in_array($strategy, $allow, true)) {
+                throw new Exception('无效的策略');
+            }
+
+            $db = Typecho_Db::get();
+            $name = 'plugin:ArticleMarkdownBackup';
+            $row = $db->fetchRow($db->select('value')->from('table.options')->where('name = ?', $name)->where('user = ?', 0));
+            $value = ['cidStrategy' => $strategy];
+            if ($row && !empty($row['value'])) {
+                $decoded = json_decode($row['value'], true);
+                if (is_array($decoded)) {
+                    $decoded['cidStrategy'] = $strategy;
+                    $value = $decoded;
+                }
+            }
+
+            if ($row) {
+                $db->query($db->update('table.options')->rows(['value' => json_encode($value)])->where('name = ?', $name)->where('user = ?', 0));
+            } else {
+                $db->query($db->insert('table.options')->rows(['name' => $name, 'user' => 0, 'value' => json_encode($value)]));
+            }
+
+            $this->widget('Widget_Notice')->set(_t('策略已更新为 %s', $strategy), 'success');
+        } catch (Exception $e) {
+            error_log('ArticleMarkdownBackup setStrategy error: ' . $e->getMessage());
+            $this->widget('Widget_Notice')->set(_t('保存失败: %s', $e->getMessage()), 'error');
+        }
+
+        $this->response->redirect(Typecho_Common::url('extending.php?panel=ArticleMarkdownBackup/manage.php&tab=cid', $this->widget('Widget_Options')->adminUrl));
     }
 }
