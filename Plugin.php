@@ -364,8 +364,9 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     {
         try {
             $options = Typecho_Widget::widget('Widget_Options')->plugin('ArticleMarkdownBackup');
-            $strategy = isset($options->cidStrategy) ? $options->cidStrategy : 'ignore';
-            return ($strategy === 'skip') ? 'skip' : 'ignore';
+            $strategy = isset($options->cidStrategy) ? (string)$options->cidStrategy : 'ignore';
+            $allowed = ['skip','ignore','grow_skip','grow_ignore'];
+            return in_array($strategy, $allowed, true) ? $strategy : 'ignore';
         } catch (Exception $e) {
             return 'ignore';
         }
