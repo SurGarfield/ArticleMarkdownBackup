@@ -640,10 +640,11 @@ if (is_file($logFile)) {
                                                         <li>
                                                             <form method="post" action="<?php echo $security->index('/action/article_markdown_backup?do=setStrategy'); ?>">
                                                                 <div style="display:block;">
-                                                                    <label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy" value="skip" <?php echo $pluginStrategy==='skip'?'checked':''; ?> /> 按最小可用位（跳过附件）</label>
-                                                                    <label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy" value="ignore" <?php echo $pluginStrategy==='ignore'?'checked':''; ?> /> 按最小可用位（忽略附件，遇附件则删除）</label>
+                                                                    <label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy" value="skip" <?php echo $pluginStrategy==='skip'?'checked':''; ?> /> 按最小可用位（跳过附件）【不建议】</label>
+                                                                    <label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy" value="ignore" <?php echo $pluginStrategy==='ignore'?'checked':''; ?> /> 按最小可用位（忽略附件，遇附件则删除）【不建议】</label>
                                                                     <label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy" value="grow_skip" <?php echo $pluginStrategy==='grow_skip'?'checked':''; ?> /> 按新增可用位（从现有最大CID开始）</label>
                                                                     <label style="display:block;margin-bottom:0;"><input type="radio" name="cidStrategy" value="grow_ignore" <?php echo $pluginStrategy==='grow_ignore'?'checked':''; ?> /> 按新增可用位（忽略附件，遇附件则删除）</label>
+                                                                
                                                                 </div>
                                                                 <div style="text-align:center;margin-top:10px;">
                                                                     <button type="submit" class="btn btn-s primary">保存策略</button>
@@ -697,446 +698,56 @@ include 'table-js.php';
 
 <script>
 $(document).ready(function() {
-    // 确保顶部Tab切换不在新标签打开
     $('a.page-navigator[href*="ArticleMarkdownBackup%2Fmanage.php&tab="]').removeAttr('target').removeAttr('rel');
-    $(document).on('mouseover click', 'a.page-navigator[href*="ArticleMarkdownBackup%2Fmanage.php&tab="]', function() {
-        $(this).removeAttr('target').removeAttr('rel');
-    });
-    // 使用原生 typecho-option-tabs 的情况下，强制在当前页切换
+    $(document).on('click', 'a.page-navigator[href*="ArticleMarkdownBackup%2Fmanage.php&tab="]', function(e){ e.preventDefault(); window.location.href = $(this).attr('href'); });
     $('.typecho-option-tabs a').removeAttr('target').removeAttr('rel');
-    $(document).on('mouseover', '.typecho-option-tabs a', function(){
-        $(this).removeAttr('target').removeAttr('rel');
-    });
-    $(document).on('click', '.typecho-option-tabs a', function(e){
-        e.preventDefault();
-        window.location.href = $(this).attr('href');
-    });
-    // 确保“刷新日志”不新开标签
-    $(document).on('click', 'a.ab-refresh-log', function(e){
-        e.preventDefault();
-        window.location.href = $(this).attr('href');
-    });
-    // 仅在备份/转换页绑定转换功能与按钮检测（使用服务器端tab判断更可靠）
+    $(document).on('click', '.typecho-option-tabs a', function(e){ e.preventDefault(); window.location.href = $(this).attr('href'); });
+    $(document).on('click', 'a.ab-refresh-log', function(e){ e.preventDefault(); window.location.href = $(this).attr('href'); });
+
     var isBackupTab = <?php echo ($activeTab === 'backup') ? 'true' : 'false'; ?>;
 
     if (isBackupTab) {
-        // 备份所有文章
-        $('#backup-all-btn').click(function() {
-            if (confirm('<?php _e('确定要备份所有文章吗？'); ?>')) {
-                window.location.href = '<?php echo $security->index('/action/article_markdown_backup?do=backupAll'); ?>';
-            }
-        });
-        // 备份勾选文章
-        $('#backup-selected-btn').click(function() {
-            var selectedCids = [];
-            var checkedBoxes = $('.typecho-list-table input[type="checkbox"]:checked').not('.typecho-table-select-all');
-            checkedBoxes.each(function() {
-                if ($(this).attr('name') === 'cid[]' && $(this).val()) {
-                    selectedCids.push($(this).val());
-                }
-            });
-            if (selectedCids.length === 0) {
-                alert('请先勾选要备份的文章');
-                return;
-            }
+        $('#backup-all-btn').on('click', function(){ if (confirm('<?php _e('确定要备份所有文章吗？'); ?>')) { window.location.href = '<?php echo $security->index('/action/article_markdown_backup?do=backupAll'); ?>'; } });
+        $('#backup-selected-btn').on('click', function(){
+            var ids = [];
+            $('.typecho-list-table input[name="cid[]"]:checked').each(function(){ ids.push($(this).val()); });
+            if (!ids.length) { alert('请先勾选要备份的文章'); return; }
             if (confirm('确定要备份勾选的文章吗？')) {
-                // 兼容无伪静态环境，action 路径加 index.php
                 var form = $('<form action="/index.php/action/article_markdown_backup?do=backupSelected" method="post"></form>');
-                for (var i = 0; i < selectedCids.length; i++) {
-                    form.append('<input type="hidden" name="cid[]" value="' + selectedCids[i] + '">');
-                }
+                ids.forEach(function(id){ form.append('<input type="hidden" name="cid[]" value="'+id+'">'); });
                 $('body').append(form);
                 form.submit();
             }
         });
-        
-        // 全部转为MD格式
-        $('#convert-all-btn').click(function() {
-            console.log('全部转为MD格式按钮被点击 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-            if (confirm('<?php _e('确定要将所有HTML文章转为MD格式吗？此操作不可逆！'); ?>')) {
-                console.log('用户确认转换，准备跳转 - 时间戳:', new Date().getTime());
-                window.location.href = '<?php echo $security->index('/action/article_markdown_backup?do=convertAll'); ?>';
-            } else {
-                console.log('用户取消转换 - 时间戳:', new Date().getTime());
-            }
-        });
-    }
+        $('#convert-all-btn').on('click', function(){ if (confirm('<?php _e('确定要将所有HTML文章转为MD格式吗？此操作不可逆！'); ?>')) { window.location.href = '<?php echo $security->index('/action/article_markdown_backup?do=convertAll'); ?>'; } });
 
-    // 检查是否有选中的文章 - 超级增强版2.0（仅备份/转换页）
-    function checkSelectedArticles() {
-        try {
-            var selectedCids = [];
-            var checkedBoxes = [];
-            var allCheckboxes = [];
-            var totalCheckboxes = 0;
-            
-            console.log('开始检查选中文章 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-            
-            // 使用多种选择器尝试获取选中的复选框
-            // 方法1：标准jQuery选择器
-            checkedBoxes = $('form[name="manage_posts"] input[name="cid[]"]:checked');
-            allCheckboxes = $('form[name="manage_posts"] input[name="cid[]"]');
-            totalCheckboxes = $('input[name="cid[]"]').length;
-            
-            console.log('方法1结果:', checkedBoxes.length, '个选中, 总共', allCheckboxes.length, '个复选框');
-            
-            // 方法2：如果方法1未找到，尝试直接使用document.querySelectorAll
-            if (!checkedBoxes.length) {
-                var elements = document.querySelectorAll('form[name="manage_posts"] input[name="cid[]"]:checked');
-                var allElements = document.querySelectorAll('form[name="manage_posts"] input[name="cid[]"]');
-                console.log('方法2结果:', elements.length, '个选中, 总共', allElements.length, '个复选框');
-                
-                if (elements.length) {
-                    checkedBoxes = $(elements);
-                }
-            }
-            
-            // 方法3：如果前两种方法都未找到，尝试更宽松的选择器
-            if (!checkedBoxes.length) {
-                checkedBoxes = $('input[name="cid[]"]:checked');
-                allCheckboxes = $('input[name="cid[]"]');
-                console.log('方法3结果:', checkedBoxes.length, '个选中, 总共', allCheckboxes.length, '个复选框');
-            }
-            
-            // 方法4：尝试使用属性选择器
-            if (!checkedBoxes.length) {
-                checkedBoxes = $('input[type="checkbox"]:checked').filter(function() {
-                    return $(this).attr('name') === 'cid[]';
-                });
-                console.log('方法4结果:', checkedBoxes.length, '个选中');
-            }
-            
-            // 方法5：尝试使用最宽泛的选择器
-            if (!checkedBoxes.length) {
-                checkedBoxes = $('.typecho-list-table input[type="checkbox"]:checked').not('.typecho-table-select-all');
-                console.log('方法5结果:', checkedBoxes.length, '个选中');
-            }
-            
-            // 收集选中的文章ID
-            checkedBoxes.each(function() {
-                selectedCids.push($(this).val());
-            });
-            
-            console.log('选中的文章ID:', selectedCids, '数量:', selectedCids.length, '总复选框数:', totalCheckboxes, '时间戳:', new Date().getTime()); // 增强调试信息
-            
-            // 获取按钮元素
-            var $btn = $('#convert-selected-btn');
-            
-            // 检查按钮是否存在
-            if ($btn.length === 0) {
-                console.error('未找到转换按钮');
-                return selectedCids;
-            }
-            
-            // 如果不在备份页，直接返回并不处理按钮状态
-            if (!isBackupTab) {
-                return selectedCids;
-            }
-
-            // 根据是否有选中项启用或禁用按钮
-            if (selectedCids.length === 0) {
-                $btn.prop('disabled', true).addClass('btn-disabled');
-                console.log('按钮已禁用');
-            } else {
-                $btn.prop('disabled', false).removeClass('btn-disabled');
-                console.log('按钮已启用');
-            }
-            
-            // 强制更新按钮视觉状态 - 使用多次延时确保更新
-            console.log('开始强制更新按钮视觉状态 - 时间戳:', new Date().getTime());
-            
-            // 立即更新一次
-            if (selectedCids.length === 0) {
-                $btn.prop('disabled', true).addClass('btn-disabled');
-                console.log('立即更新：按钮已禁用 - 时间戳:', new Date().getTime());
-            } else {
-                $btn.prop('disabled', false).removeClass('btn-disabled');
-                console.log('立即更新：按钮已启用 - 时间戳:', new Date().getTime());
-            }
-            
-            // 0ms延时更新
-            setTimeout(function() {
-                if (selectedCids.length === 0) {
-                    $btn.prop('disabled', true).addClass('btn-disabled');
-                    console.log('0ms延时更新：按钮已禁用 - 时间戳:', new Date().getTime());
-                } else {
-                    $btn.prop('disabled', false).removeClass('btn-disabled');
-                    console.log('0ms延时更新：按钮已启用 - 时间戳:', new Date().getTime());
-                }
-            }, 0);
-            
-            // 50ms延时更新
-            setTimeout(function() {
-                if (selectedCids.length === 0) {
-                    $btn.prop('disabled', true).addClass('btn-disabled');
-                    console.log('50ms延时更新：按钮已禁用 - 时间戳:', new Date().getTime());
-                } else {
-                    $btn.prop('disabled', false).removeClass('btn-disabled');
-                    console.log('50ms延时更新：按钮已启用 - 时间戳:', new Date().getTime());
-                }
-            }, 50);
-            
-            // 100ms延时更新
-            setTimeout(function() {
-                if (selectedCids.length === 0) {
-                    $btn.prop('disabled', true).addClass('btn-disabled');
-                    console.log('100ms延时更新：按钮已禁用 - 时间戳:', new Date().getTime());
-                } else {
-                    $btn.prop('disabled', false).removeClass('btn-disabled');
-                    console.log('100ms延时更新：按钮已启用 - 时间戳:', new Date().getTime());
-                }
-            }, 100);
-            
-            // 第一次延时更新
-            setTimeout(function() {
-                if (selectedCids.length === 0) {
-                    $btn.prop('disabled', true).addClass('btn-disabled');
-                    console.log('延时0ms更新：按钮已禁用');
-                } else {
-                    $btn.prop('disabled', false).removeClass('btn-disabled');
-                    console.log('延时0ms更新：按钮已启用');
-                }
-                
-                // 第二次延时更新
-                setTimeout(function() {
-                    if (selectedCids.length === 0) {
-                        $btn.prop('disabled', true).addClass('btn-disabled');
-                        console.log('延时50ms更新：按钮已禁用');
-                    } else {
-                        $btn.prop('disabled', false).removeClass('btn-disabled');
-                        console.log('延时50ms更新：按钮已启用');
-                    }
-                    
-                    // 第三次延时更新
-                    setTimeout(function() {
-                        if (selectedCids.length === 0) {
-                            $btn.prop('disabled', true).addClass('btn-disabled');
-                            console.log('延时100ms更新：按钮已禁用');
-                        } else {
-                            $btn.prop('disabled', false).removeClass('btn-disabled');
-                            console.log('延时100ms更新：按钮已启用');
-                        }
-                    }, 50);
-                }, 50);
-            }, 0);
-            
-            return selectedCids;
-        } catch (e) {
-            console.error('检查选中文章时出错:', e);
-            return [];
+        function updateConvertSelectedState(){
+            var anyChecked = $('.typecho-list-table input[name="cid[]"]:checked').length > 0;
+            $('#convert-selected-btn').prop('disabled', !anyChecked).toggleClass('btn-disabled', !anyChecked);
         }
-    }
-    
-    // 使用事件委托，监听所有复选框变化 - 超级增强版
-    $(document).on('click change', 'form[name="manage_posts"] input[type="checkbox"], input[name="cid[]"], .typecho-table-select-all, .typecho-list-table input[type="checkbox"]', function() {
-        console.log('复选框点击/变化事件触发 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-        // 使用短延迟确保复选框状态已更新
-        setTimeout(function() {
-            console.log('复选框事件延时检查 - 时间戳:', new Date().getTime());
-            checkSelectedArticles();
-        }, 10);
-    });
-    
-    // 全选按钮特殊处理 - 使用事件委托
-    $(document).on('click', '.typecho-table-select-all, .typecho-list-operate input[type="checkbox"]', function() {
-        console.log('全选按钮点击事件触发 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-        var isChecked = $(this).prop('checked');
-        $('form[name="manage_posts"] input[name="cid[]"]').prop('checked', isChecked);
-        $('input[name="cid[]"]').prop('checked', isChecked); // 额外添加一个选择器
-        // 使用短延迟确保复选框状态已更新
-        setTimeout(function() {
-            console.log('全选按钮事件延时检查 - 时间戳:', new Date().getTime());
-            checkSelectedArticles();
-        }, 10);
-    });
-    
-    // 添加更多鼠标事件监听，确保用户交互后立即更新状态 - 增强版
-    $(document).on('mouseup mousedown', 'form[name="manage_posts"] input[type="checkbox"], input[name="cid[]"], .typecho-table-select-all, .typecho-list-table input[type="checkbox"], .typecho-list-operate input[type="checkbox"]', function() {
-        console.log('复选框鼠标事件触发 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-        // 使用短延迟确保复选框状态已更新
-        setTimeout(function() {
-            console.log('鼠标事件延时检查 - 时间戳:', new Date().getTime());
-            checkSelectedArticles();
-        }, 10);
-    });
-    
-    // 监听表单点击事件 - 增强版
-    $(document).on('click', 'form[name="manage_posts"], .typecho-list-table, .typecho-list-operate, .typecho-page-main', function() {
-        console.log('表单或表格点击事件触发 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-        // 使用短延迟确保复选框状态已更新
-        setTimeout(function() {
-            console.log('表单点击事件延时检查 - 时间戳:', new Date().getTime());
-            checkSelectedArticles();
-        }, 10);
-    });
-    
-    // 添加键盘事件监听 - 增强版
-    $(document).on('keyup keydown', function() {
-        console.log('键盘事件触发 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-        // 使用短延迟确保复选框状态已更新
-        setTimeout(function() {
-            console.log('键盘事件延时检查 - 时间戳:', new Date().getTime());
-            checkSelectedArticles();
-        }, 10);
-    });
-    
-    // 监听页面点击事件 - 增强版
-    $(document).on('click', function() {
-        console.log('页面点击事件触发 - ' + new Date().toLocaleTimeString() + ' - 时间戳:', new Date().getTime());
-        // 使用短延迟确保复选框状态已更新
-        setTimeout(function() {
-            console.log('页面点击事件延时检查 - 时间戳:', new Date().getTime());
-            checkSelectedArticles();
-        }, 10);
-    });
-    
-    // 部分转为MD格式 - 超级增强版2.0
-    if (isBackupTab) {
-    $('#convert-selected-btn').click(function() {
-        console.log('部分转为MD格式按钮被点击 - 时间戳:', new Date().getTime());
-        
-        // 强制重新检查选中状态
-        var selectedCids = [];
-        
-        // 使用多种选择器尝试获取选中的复选框
-        var checkedBoxes1 = $('form[name="manage_posts"] input[name="cid[]"]:checked');
-        var checkedBoxes2 = $('input[name="cid[]"]:checked');
-        var checkedBoxes3 = $('.typecho-list-table input[type="checkbox"]:checked').not('.typecho-table-select-all');
-        var checkedBoxes4 = $('table.typecho-list-table tbody tr td:first-child input[type="checkbox"]:checked');
-        
-        console.log('方法1选中复选框数量:', checkedBoxes1.length);
-        console.log('方法2选中复选框数量:', checkedBoxes2.length);
-        console.log('方法3选中复选框数量:', checkedBoxes3.length);
-        console.log('方法4选中复选框数量:', checkedBoxes4.length);
-        
-        // 使用数量最多的选择器结果
-        var allCheckedBoxes = checkedBoxes1;
-        if (checkedBoxes2.length > allCheckedBoxes.length) allCheckedBoxes = checkedBoxes2;
-        if (checkedBoxes3.length > allCheckedBoxes.length) allCheckedBoxes = checkedBoxes3;
-        if (checkedBoxes4.length > allCheckedBoxes.length) allCheckedBoxes = checkedBoxes4;
-        
-        console.log('最终选择的复选框数量:', allCheckedBoxes.length);
-        
-        // 收集选中的文章ID
-        allCheckedBoxes.each(function() {
-            if($(this).attr('name') === 'cid[]' && $(this).val()) {
-                selectedCids.push($(this).val());
+        $(document).on('change', 'form[name="manage_posts"] input[type="checkbox"], .typecho-table-select-all', function(){
+            if ($(this).hasClass('typecho-table-select-all')) {
+                var s = $(this).prop('checked');
+                $('form[name="manage_posts"] input[name="cid[]"]').prop('checked', s);
             }
+            updateConvertSelectedState();
         });
-        
-        console.log('按钮点击时直接检测到选中ID:', selectedCids, '数量:', selectedCids.length);
-        
-        // 如果直接获取失败，再尝试使用checkSelectedArticles函数
-        if (selectedCids.length === 0) {
-            console.log('直接获取失败，尝试使用checkSelectedArticles函数');
-            selectedCids = checkSelectedArticles();
-            console.log('checkSelectedArticles函数检测到选中ID:', selectedCids);
-        }
-        
-        if (selectedCids.length === 0) {
-            console.log('未选择任何文章，显示提示 - 时间戳:', new Date().getTime());
-            alert('<?php _e('请至少选择一篇文章'); ?>');
-            return;
-        }
-        
-        // 转换选中文章为MD格式
-        var confirmResult = confirm('确定要将选中的' + selectedCids.length + '篇文章转为MD格式吗？此操作不可逆！');
-        console.log('确认对话框结果:', confirmResult, '- 时间戳:', new Date().getTime());
-        
-        // 保存当前选中的ID，避免确认对话框导致状态丢失
-        var savedSelectedCids = selectedCids.slice();
-        
-        // 无论用户点击确定还是取消，都重新检查选中状态
-        setTimeout(function() {
-            console.log('确认对话框关闭后重新检查选中状态 - 时间戳:', new Date().getTime());
-            var currentSelected = checkSelectedArticles();
-            console.log('当前选中ID:', currentSelected);
-        }, 50);
-        
-        if (confirmResult) {
-            console.log('用户确认转换，准备跳转 - 使用保存的ID:', savedSelectedCids);
-            // 使用表单提交而不是URL参数，避免URL长度限制
+        $('#convert-selected-btn').on('click', function(){
+            var ids = [];
+            $('form[name="manage_posts"] input[name="cid[]"]:checked').each(function(){ ids.push($(this).val()); });
+            if (!ids.length) { alert('<?php _e('请至少选择一篇文章'); ?>'); return; }
+            if (!confirm('确定要将选中的'+ids.length+'篇文章转为MD格式吗？此操作不可逆！')) { return; }
             var form = $('<form action="<?php echo $security->index("/action/article_markdown_backup?do=convertSelected"); ?>" method="post"></form>');
-            
-            // 添加选中的文章ID作为表单数据
-            for (var i = 0; i < savedSelectedCids.length; i++) {
-                form.append('<input type="hidden" name="cid[]" value="' + savedSelectedCids[i] + '">');
-            }
-            
-            // 添加表单到页面并提交
+            ids.forEach(function(id){ form.append('<input type="hidden" name="cid[]" value="'+id+'">'); });
             $('body').append(form);
-            console.log('表单已创建，准备提交 - 时间戳:', new Date().getTime());
             form.submit();
-        } else {
-            console.log('用户取消转换，重新检查按钮状态 - 时间戳:', new Date().getTime());
-            // 用户取消后，多次检查以确保按钮状态正确
-            setTimeout(function() {
-                console.log('取消后50ms检查 - 时间戳:', new Date().getTime());
-                checkSelectedArticles();
-            }, 50);
-            
-            setTimeout(function() {
-                console.log('取消后200ms检查 - 时间戳:', new Date().getTime());
-                checkSelectedArticles();
-            }, 200);
-        }
-    });
-    }
-    
-    // 初始化与轮询仅在备份/转换页执行
-    if (isBackupTab) {
-        console.log('开始初始化按钮状态 - ' + new Date().toLocaleTimeString());
-        // 立即检查一次
-        checkSelectedArticles();
-        // 页面加载后多次延迟检查
-        setTimeout(function() { console.log('延时50ms检查'); checkSelectedArticles(); }, 50);
-        setTimeout(function() { console.log('延时100ms检查'); checkSelectedArticles(); }, 100);
-        setTimeout(function() { console.log('延时300ms检查'); checkSelectedArticles(); }, 300);
-        setTimeout(function() { console.log('延时500ms检查'); checkSelectedArticles(); }, 500);
-        setTimeout(function() { console.log('延时1000ms检查'); checkSelectedArticles(); }, 1000);
-        setTimeout(function() { console.log('延时2000ms检查'); checkSelectedArticles(); }, 2000);
-        // 添加轮询机制
-        var checkInterval = setInterval(function() {
-            console.log('轮询检查 - ' + new Date().toLocaleTimeString());
-            checkSelectedArticles();
-        }, 1000);
-        // 15秒后清除轮询
-        setTimeout(function() {
-            clearInterval(checkInterval);
-            console.log('按钮状态检查轮询已停止 - ' + new Date().toLocaleTimeString());
-        }, 15000);
-    }
-    
-    // 监听页面点击事件（仅备份/转换页）
-    if (isBackupTab) {
-        $(document).on('click', function() {
-            setTimeout(checkSelectedArticles, 10);
         });
-    }
-    
-    // 使用MutationObserver监控DOM变化（仅备份/转换页）
-    if (isBackupTab && window.MutationObserver) {
-        var observer = new MutationObserver(function(mutations) {
-            checkSelectedArticles();
-        });
-        var formElement = document.querySelector('form[name="manage_posts"]');
-        if (formElement) {
-            observer.observe(formElement, { childList: true, subtree: true, attributes: true });
-        }
+        updateConvertSelectedState();
     }
 });
 </script>
 <script>
 $(document).ready(function() {
-    // 移除分页链接的target属性，确保在当前窗口打开
     $('.pagination a.page-navigator').removeAttr('target').removeAttr('rel');
-    
-    // 动态监听，确保后续添加的链接也不会有target属性
-    $(document).on('mouseover', '.pagination a.page-navigator', function() {
-        $(this).removeAttr('target').removeAttr('rel');
-    });
 });
 </script>
-</tbody>
-</table>
-<?php include 'footer.php'; ?>

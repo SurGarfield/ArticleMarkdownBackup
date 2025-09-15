@@ -2,6 +2,23 @@
 class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\ActionInterface
 {
     /**
+     * 记录日志到插件目录 logs/cid-sync.log
+     */
+    private function logLine($message)
+    {
+        try {
+            $dir = __DIR__ . DIRECTORY_SEPARATOR . 'logs';
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0755, true);
+            }
+            $file = $dir . DIRECTORY_SEPARATOR . 'cid-sync.log';
+            $date = date('Y-m-d H:i:s');
+            @file_put_contents($file, "[{$date}] " . $message . "\n", FILE_APPEND | LOCK_EX);
+        } catch (\Throwable $t) {
+            // ignore
+        }
+    }
+    /**
      * 判断文章是否已经是 Markdown
      * 规则：以 <!--markdown--> 开头，且去掉标记后不再包含 HTML 标签
      * @param string $text
@@ -578,6 +595,9 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
             case 'deleteSelectedAttachments':
                 $this->deleteSelectedAttachments();
                 break;
+            case 'reorderCids':
+                $this->reorderCids();
+                break;
             case 'setStrategy':
                 $this->setStrategy();
                 break;
@@ -645,5 +665,172 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
         }
 
         $this->response->redirect(Typecho_Common::url('extending.php?panel=ArticleMarkdownBackup/manage.php&tab=cid', $this->widget('Widget_Options')->adminUrl));
+    }
+
+    /**
+     * 重排全站内容CID：
+     * - 先备份
+     * - 删除所有附件释放CID
+     * - 将非附件内容按旧CID升序映射为从1开始的连续新CID
+     * - 更新 comments/fields/relationships/parent 引用
+     * - 使用“偏移两阶段”方式避免主键冲突
+     * - 重置自增
+     */
+    public function reorderCids()
+    {
+        try {
+            // 必须开启策略管理才允许执行
+            try {
+                $opt = Typecho_Widget::widget('Widget_Options')->plugin('ArticleMarkdownBackup');
+                $enabled = isset($opt->enableStrategy) && (string)$opt->enableStrategy === '1';
+                if (!$enabled) {
+                    $this->logLine('重排被拒绝：策略管理未开启');
+                    $this->widget('Widget_Notice')->set(_t('请先在“策略管理”中开启策略后再执行重排'), 'error');
+                    $this->response->redirect(Typecho_Common::url('options-plugin.php?config=ArticleMarkdownBackup', $this->widget('Widget_Options')->adminUrl));
+                    return;
+                }
+            } catch (Exception $e) {
+                $this->logLine('重排前检查异常：' . $e->getMessage());
+                $this->widget('Widget_Notice')->set(_t('无法确认策略开关状态，已取消执行'), 'error');
+                $this->response->redirect(Typecho_Common::url('options-plugin.php?config=ArticleMarkdownBackup', $this->widget('Widget_Options')->adminUrl));
+                return;
+            }
+
+            @set_time_limit(0);
+            $this->logLine('重排开始');
+
+            // 先做一次备份
+            try {
+                $this->backupAll(true);
+                $this->logLine('已完成自动备份');
+            } catch (Exception $e) {
+                $this->logLine('自动备份失败: ' . $e->getMessage());
+            }
+
+            $db = Typecho_Db::get();
+            $adapter = $db->getAdapter();
+            $driver = method_exists($adapter, 'getDriver') ? $adapter->getDriver() : '';
+            $prefix = $db->getPrefix();
+
+            // 开启事务
+            try {
+                if (stripos($driver, 'pgsql') !== false) {
+                    $db->query('BEGIN');
+                } else {
+                    $db->query('START TRANSACTION');
+                }
+            } catch (Exception $e) {
+                // 某些环境不支持显式事务命令，忽略
+            }
+
+            // 收集并删除所有附件，顺带清理其附属引用
+            $attachmentRows = $db->fetchAll(
+                $db->select('cid')->from('table.contents')->where('type = ?', 'attachment')
+            );
+            $attachmentCids = [];
+            foreach ($attachmentRows as $ar) {
+                $attachmentCids[] = (int)$ar['cid'];
+            }
+            $deletedAtt = 0;
+            if (!empty($attachmentCids)) {
+                foreach ($attachmentCids as $attCid) {
+                    // 删除与附件相关的 comments/fields/relationships（通常很少，但为安全清理）
+                    $db->query($db->delete('table.comments')->where('cid = ?', $attCid));
+                    $db->query($db->delete('table.fields')->where('cid = ?', $attCid));
+                    $db->query($db->delete('table.relationships')->where('cid = ?', $attCid));
+                    // 删除附件本身
+                    $db->query($db->delete('table.contents')->where('cid = ? AND type = ?', $attCid, 'attachment'));
+                    $deletedAtt++;
+                }
+                $this->logLine('已删除附件数量: ' . $deletedAtt);
+            }
+
+            // 读取非附件内容，按旧CID升序
+            $rows = $db->fetchAll(
+                $db->select('cid', 'type', 'parent')->from('table.contents')->where('type <> ?', 'attachment')->order('cid', Typecho_Db::SORT_ASC)
+            );
+            if (empty($rows)) {
+                $this->logLine('无非附件内容，无需重排');
+                try {
+                    if (stripos($driver, 'pgsql') !== false) { $db->query('COMMIT'); } else { $db->query('COMMIT'); }
+                } catch (Exception $e) {}
+                $this->widget('Widget_Notice')->set(_t('无内容需要重排'), 'success');
+                $this->response->redirect(Typecho_Common::url('options-plugin.php?config=ArticleMarkdownBackup', $this->widget('Widget_Options')->adminUrl));
+                return;
+            }
+
+            // 构建映射 oldCid => newCid
+            $mapping = [];
+            $new = 1;
+            foreach ($rows as $r) {
+                $old = (int)$r['cid'];
+                $mapping[$old] = $new;
+                $new++;
+            }
+
+            // 预计算偏移，避免主键冲突
+            $maxObj = $db->fetchObject($db->select(['MAX(cid)' => 'maxcid'])->from('table.contents'));
+            $maxCid = $maxObj && isset($maxObj->maxcid) ? (int)$maxObj->maxcid : 0;
+            $offset = $maxCid + 100000;
+
+            // 先更新引用表到“最终新CID”
+            foreach ($mapping as $oldCid => $newCid) {
+                if ($oldCid === $newCid) {
+                    // 即使相同也统一更新，保证一致性
+                }
+                $db->query($db->update('table.comments')->rows(['cid' => $newCid])->where('cid = ?', $oldCid));
+                $db->query($db->update('table.fields')->rows(['cid' => $newCid])->where('cid = ?', $oldCid));
+                $db->query($db->update('table.relationships')->rows(['cid' => $newCid])->where('cid = ?', $oldCid));
+            }
+
+            // 更新 contents.parent 到“最终新CID”
+            foreach ($mapping as $oldCid => $newCid) {
+                $db->query($db->update('table.contents')->rows(['parent' => $newCid])->where('parent = ?', $oldCid));
+            }
+
+            // 第一阶段：将内容CID写入临时不冲突区间（newCid + offset）
+            foreach ($mapping as $oldCid => $newCid) {
+                $tmpCid = $newCid + $offset;
+                $db->query($db->update('table.contents')->rows(['cid' => $tmpCid])->where('cid = ?', $oldCid));
+            }
+
+            // 第二阶段：将临时区间的CID回写为最终新CID
+            foreach ($mapping as $oldCid => $newCid) {
+                $tmpCid = $newCid + $offset;
+                $db->query($db->update('table.contents')->rows(['cid' => $newCid])->where('cid = ?', $tmpCid));
+            }
+
+            // 设置自增/序列为下一个可用值
+            $next = count($mapping) + 1;
+            try {
+                if (stripos($driver, 'pgsql') !== false) {
+                    $seq = $prefix . 'contents_seq';
+                    $db->query("SELECT setval('{$seq}', {$next}, true)");
+                } elseif (stripos($driver, 'sqlite') !== false) {
+                    $table = $prefix . 'contents';
+                    @$db->query("UPDATE sqlite_sequence SET seq = {$next} WHERE name = '{$table}'");
+                } else {
+                    $table = $prefix . 'contents';
+                    $db->query("ALTER TABLE `{$table}` AUTO_INCREMENT = {$next}");
+                }
+            } catch (Exception $e) {
+                $this->logLine('设置自增失败: ' . $e->getMessage());
+            }
+
+            // 提交事务
+            try {
+                $db->query('COMMIT');
+            } catch (Exception $e) {}
+
+            $this->logLine(sprintf('重排完成：非附件内容 %d 条，删除附件 %d 个，下一个CID=%d', count($mapping), $deletedAtt, $next));
+            $this->widget('Widget_Notice')->set(_t('重排完成：内容 %d 条，删除附件 %d 个', count($mapping), $deletedAtt), 'success');
+        } catch (Exception $e) {
+            // 回滚
+            try { $this->logLine('重排异常: ' . $e->getMessage()); $db = Typecho_Db::get(); $db->query('ROLLBACK'); } catch (Exception $e2) {}
+            $this->widget('Widget_Notice')->set(_t('重排失败: %s', $e->getMessage()), 'error');
+        }
+
+        // 返回到插件配置页
+        $this->response->redirect(Typecho_Common::url('options-plugin.php?config=ArticleMarkdownBackup', $this->widget('Widget_Options')->adminUrl));
     }
 }

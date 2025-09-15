@@ -4,7 +4,7 @@
  * 
  * @package Article Markdown Backup
  * @author 森木志
- * @version 1.2.1
+ * @version 1.2.2
  * @link https://oxxx.cn
  */
 class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
@@ -14,15 +14,15 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
      */
     public static function activate()
     {
-        // 注册action
+        
         Helper::addAction('article_markdown_backup', 'ArticleMarkdownBackup_Action');
         
-        // 添加管理页面
+        
         Helper::addPanel(1, 'ArticleMarkdownBackup/manage.php', _t('文章备份与转换'), _t('文章备份与转换'), 'administrator');
-        // 单独注册策略管理面板，避免在路径中使用查询字符串
+        
         Helper::addPanel(1, 'ArticleMarkdownBackup/manage_cid.php', _t('CID策略管理'), _t('CID策略管理'), 'administrator');
 
-        // 确保插件配置项存在，避免首次打开配置页抛出“配置信息没有找到”
+        
         try {
             $db = Typecho_Db::get();
             $exists = $db->fetchRow(
@@ -36,14 +36,14 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
                 ]));
             }
         } catch (Exception $e) {
-            // 忽略初始化失败
+            
         }
 
-        // 挂载到文章/页面编辑的写入过滤器, 用于分配连续CID
+        
         Typecho_Plugin::factory('Widget_Contents_Post_Edit')->write = array('ArticleMarkdownBackup_Plugin', 'filterWriteAssignCid');
         Typecho_Plugin::factory('Widget_Contents_Page_Edit')->write = array('ArticleMarkdownBackup_Plugin', 'filterWriteAssignCid');
 
-        // 写入完成与发布完成时记录日志与提示
+        
         Typecho_Plugin::factory('Widget_Contents_Post_Edit')->finishSave = array('ArticleMarkdownBackup_Plugin', 'onFinish');
         Typecho_Plugin::factory('Widget_Contents_Post_Edit')->finishPublish = array('ArticleMarkdownBackup_Plugin', 'onFinish');
         Typecho_Plugin::factory('Widget_Contents_Page_Edit')->finishSave = array('ArticleMarkdownBackup_Plugin', 'onFinish');
@@ -57,10 +57,10 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
      */
     public static function deactivate()
     {
-        // 移除action
+        
         Helper::removeAction('article_markdown_backup');
         
-        // 移除管理页面
+        
         Helper::removePanel(1, 'ArticleMarkdownBackup/manage.php');
         Helper::removePanel(1, 'ArticleMarkdownBackup/manage_cid.php');
         
@@ -72,7 +72,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
      */
     public static function config(Typecho_Widget_Helper_Form $form)
     {
-        // 确保配置行存在（避免首次打开配置页抛出异常）
+        
         try {
             $db = Typecho_Db::get();
             $exists = $db->fetchRow(
@@ -86,7 +86,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
                 ]));
             }
         } catch (Exception $e) {
-            // ignore
+            
         }
 
         // 策略管理开关（默认关闭）
@@ -102,7 +102,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
         );
         $form->addInput($enableStrategy);
 
-        // CID 连贯策略配置（自定义无 span 渲染）
+        
         $cidStrategyDefault = 'ignore';
         try {
             $opt = Typecho_Widget::widget('Widget_Options')->plugin('ArticleMarkdownBackup');
@@ -110,70 +110,63 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
                 $cidStrategyDefault = (string)$opt->cidStrategy;
             }
         } catch (Exception $e) {}
-        // 用隐藏项承接保存，避免 Typecho 默认 Radio 生成 span
+        
         if (class_exists('Typecho_Widget_Helper_Form_Element_Hidden')) {
             $cidStrategyHidden = new Typecho_Widget_Helper_Form_Element_Hidden('cidStrategy', null, $cidStrategyDefault, _t('CID 连贯策略'));
         } else {
-            // 兼容性兜底：使用文本项并隐藏
+            
             $cidStrategyHidden = new Typecho_Widget_Helper_Form_Element_Text('cidStrategy', null, $cidStrategyDefault, _t('CID 连贯策略'));
             $cidStrategyHidden->input->setAttribute('type', 'hidden');
         }
         $form->addInput($cidStrategyHidden);
 
-        // 自定义单选渲染（不使用 span）
-        echo '<div id="amb-cid-strategy-render">';
-        echo '<label class="typecho-label">' . _t('CID 连贯策略') . '</label>';
-        echo '<label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy_visual" value="skip"' . ($cidStrategyDefault==='skip'?' checked':'') . '> ' . _t('按最小可用位（跳过附件）') . '</label>';
-        echo '<label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy_visual" value="ignore"' . ($cidStrategyDefault==='ignore'?' checked':'') . '> ' . _t('按最小可用位（忽略附件，遇附件则删除）') . '</label>';
-        echo '<label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy_visual" value="grow_skip"' . ($cidStrategyDefault==='grow_skip'?' checked':'') . '> ' . _t('按新增可用位（从现有最大CID开始）') . '</label>';
-        echo '<label style="display:block;margin-bottom:6px;"><input type="radio" name="cidStrategy_visual" value="grow_ignore"' . ($cidStrategyDefault==='grow_ignore'?' checked':'') . '> ' . _t('按新增可用位（忽略附件，遇附件则删除）') . '</label>';
-        echo '<p class="description">' . _t('选择建议与自动同步时对附件的处理方式') . '</p>';
-        echo '</div>';
+        
+        echo '<p class="description">' . _t('策略修改请前往“CID 连贯管理”页操作。') . '</p>';
 
-        echo '<script>(function(){\n'
-            . 'document.addEventListener("DOMContentLoaded", function(){\n'
-            . '  var hidden = document.querySelector("input[name=cidStrategy]");\n'
-            . '  var radios = document.querySelectorAll("input[name=cidStrategy_visual]");\n'
-            . '  function sync(){\n'
-            . '    var v = hidden && hidden.value ? hidden.value : "";\n'
-            . '    radios.forEach(function(r){ if(r.value===v){ r.checked=true; } });\n'
-            . '  }\n'
-            . '  function hook(){\n'
-            . '    radios.forEach(function(r){\n'
-            . '      r.addEventListener("change", function(){ if(hidden){ hidden.value = r.value; } });\n'
-            . '    });\n'
-            . '  }\n'
-            . '  sync(); hook();\n'
-            . '});\n'
-            . '})();</script>';
-
-        // 让本配置页的两个单选项“逐行显示”
+        
         echo '<style>#typecho-option-item-enableStrategy label, #typecho-option-item-cidStrategy label { display:block; margin-bottom:6px; }</style>';
-        // 将默认生成的 span 包裹移除，改为 label 单独成行
-        echo '<script>(function(){\n'
-            . 'document.addEventListener("DOMContentLoaded", function(){\n'
-            . '  function rewriteRadios(groupId){\n'
-            . '    var root = document.getElementById(groupId);\n'
-            . '    if(!root) return;\n'
-            . '    var spans = Array.prototype.slice.call(root.querySelectorAll("span"));\n'
-            . '    spans.forEach(function(sp){\n'
-            . '      var input = sp.querySelector("input");\n'
-            . '      var lbl = sp.querySelector("label");\n'
-            . '      if(!input) { sp.parentNode.removeChild(sp); return; }\n'
-            . '      var newLabel = document.createElement("label");\n'
-            . '      newLabel.style.display = "block";\n'
-            . '      newLabel.style.marginBottom = "6px";\n'
-            . '      newLabel.appendChild(input);\n'
-            . '      var text = lbl ? lbl.textContent : "";\n'
-            . '      newLabel.appendChild(document.createTextNode(" " + text));\n'
-            . '      sp.parentNode.insertBefore(newLabel, sp);\n'
-            . '      sp.parentNode.removeChild(sp);\n'
-            . '    });\n'
-            . '  }\n'
-            . '  rewriteRadios("typecho-option-item-cidStrategy");\n'
-            . '  rewriteRadios("typecho-option-item-enableStrategy");\n'
-            . '});\n'
-            . '})();</script>';
+
+        
+        $actionUrl = Typecho_Common::url('/index.php/action/article_markdown_backup?do=reorderCids', Helper::options()->siteUrl);
+        try {
+            $securityWidget = Typecho_Widget::widget('Widget_Security');
+            if ($securityWidget && method_exists($securityWidget, 'index')) {
+                
+                ob_start();
+                $ret = $securityWidget->index('/action/article_markdown_backup?do=reorderCids');
+                $buf = ob_get_clean();
+                if (is_string($ret) && $ret !== '') {
+                    $actionUrl = $ret;
+                } elseif (is_string($buf) && $buf !== '') {
+                    $actionUrl = $buf;
+                }
+            }
+        } catch (Exception $e) {
+            
+        }
+        
+        $enabledStrategyFlag = '0';
+        try {
+            $optObj = Typecho_Widget::widget('Widget_Options')->plugin('ArticleMarkdownBackup');
+            if (isset($optObj->enableStrategy)) {
+                $enabledStrategyFlag = (string)$optObj->enableStrategy;
+            }
+        } catch (Exception $e) {}
+        $disabledAttr = ($enabledStrategyFlag === '1') ? '' : ' disabled';
+
+        echo '<div class="typecho-page-options widget" style="margin-top:12px;">';
+        echo '<h3>' . _t('风险策略') . '</h3>';
+        echo '<ul class="typecho-option"><li>';
+        echo '<form method="post" action="' . htmlspecialchars($actionUrl) . '" onsubmit="return window.confirm(\'确认执行重排Cid策略？该操作将删除所有附件并重排所有内容CID，且不可逆！请确保已备份。\');" style="display:inline;">';
+        echo '<button type="submit" class="btn btn-s danger' . ($disabledAttr ? ' btn-disabled' : '') . '"' . $disabledAttr . '>' . _t('重排Cid策略') . '</button>';
+        echo '</form>';
+        echo '<p class="description" style="margin-top:8px;color:#b00;">' . _t('将删除全部附件并为所有文章/页面重排连续的CID，可能会导致文章链接不是原来的内容等问题，请您知悉本操作的功能并知悉功能带来的后果后再使用。强烈建议先备份。') . '</p>';
+        if ($disabledAttr) {
+            echo '<p class="description" style="color:#c00;">' . _t('当前“策略管理”未开启，开启后方可执行重排。') . '</p>';
+        }
+        echo '</li></ul>';
+        echo '</div>';
+        
     }
 
     /**
@@ -181,7 +174,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
      */
     public static function personalConfig(Typecho_Widget_Helper_Form $form)
     {
-        // 个人配置选项
+        
     }
     
     /**
@@ -189,7 +182,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
      */
     public static function render()
     {
-        // 空实现，避免出现回调错误
+        
     }
 
     /**
@@ -201,21 +194,21 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     public static function filterWriteAssignCid($contents, $widget)
     {
         try {
-            // 未开启策略管理则不处理
+            
             if (!self::isStrategyEnabled()) {
                 return $contents;
             }
-            // 已有内容编辑时不干预
+            
             if (method_exists($widget, 'have') && $widget->have()) {
                 return $contents;
             }
 
-            // 仅在新建内容/草稿时处理
+            
             $db = Typecho_Db::get();
 
             $strategy = self::getStrategy();
 
-            // 选择起点: 最小可用位(从1) 或 新增可用位(从 maxValidCid+1)
+            
             if ($strategy === 'grow_skip' || $strategy === 'grow_ignore') {
                 $candidate = max(1, self::getMaxValidCid($db) + 1);
             } else {
@@ -225,30 +218,30 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
             while (true) {
                 $row = $db->fetchRow($db->select('cid', 'type')->from('table.contents')->where('cid = ?', $candidate));
                 if (empty($row)) {
-                    // 空位，直接使用
+                    
                     break;
                 }
                 if (isset($row['type']) && $row['type'] === 'attachment') {
                     if ($strategy === 'ignore' || $strategy === 'grow_ignore') {
-                        // 删除附件占位
+                        
                         $db->query($db->delete('table.contents')->where('cid = ?', $candidate));
                         self::log(sprintf('删除占用CID的附件: cid=%d', $candidate));
-                        // 提示
+                        
                         try { Typecho_Widget::widget('Widget_Notice')->set(_t('删除附件占用，已分配CID %d', $candidate), 'success'); } catch (Exception $e) {}
                         break;
                     } else {
-                        // 跳过附件，不删除
+                        
                         $bumped++;
                         $candidate++;
                         continue;
                     }
                 }
-                // 被有效内容占用, 递增
+                
                 $bumped++;
                 $candidate++;
             }
 
-            // 将候选CID写入, 由Typecho自带insert逻辑尊重cid
+            
             $contents['cid'] = $candidate;
             if ($bumped > 0) {
                 self::log(sprintf('CID顺延: 递增%d次，最终cid=%d', $bumped, $candidate));
@@ -271,14 +264,14 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     public static function onFinish($contents, $widget)
     {
         try {
-            // 未开启策略管理则跳过
+            
             if (!self::isStrategyEnabled()) {
                 return;
             }
             $db = Typecho_Db::get();
             $next = self::getRecommendedNextCid($db);
 
-            // 自动同步: 仅在“最小可用位”策略下进行向下迁移
+            
             $currentCid = isset($widget->cid) ? intval($widget->cid) : 0;
             $strategy = self::getStrategy();
             $isMinStrategy = ($strategy === 'skip' || $strategy === 'ignore');
@@ -312,7 +305,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     }
 
     /**
-     * 获取最大有效CID(排除附件)
+     
      */
     private static function getMaxValidCid($db)
     {
@@ -324,7 +317,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     }
 
     /**
-     * 计算建议的下一个最小可用CID(忽略附件占用)
+     
      */
     private static function getRecommendedNextCid($db)
     {
@@ -358,7 +351,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     }
 
     /**
-     * 获取策略: skip(跳过附件) / ignore(忽略附件并可删除)
+     
      */
     private static function getStrategy()
     {
@@ -373,7 +366,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     }
 
     /**
-     * 是否开启策略管理
+     
      */
     private static function isStrategyEnabled()
     {
@@ -389,7 +382,7 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
     }
 
     /**
-     * 将当前内容迁移到不大于当前cid的最小可用cid(忽略附件占用, 附件可被删除)
+     
      */
     private static function migrateContentCidIfPossible($db, int $currentCid, int $targetStart, bool $allowDeleteAttachment)
     {
@@ -398,15 +391,15 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
             while ($candidate < $currentCid) {
                 $row = $db->fetchRow($db->select('cid', 'type')->from('table.contents')->where('cid = ?', $candidate));
                 if (empty($row)) {
-                    break; // 空位
+                    break;
                 }
                 if ($row['type'] === 'attachment') {
                     if ($allowDeleteAttachment) {
                         $db->query($db->delete('table.contents')->where('cid = ?', $candidate));
-                        self::log(sprintf('auto-sync 清理附件: cid=%d', $candidate));
+                        self::log(sprintf('auto-sync clear attachment: cid=%d', $candidate));
                         break;
                     } else {
-                        // 不允许删除附件，继续寻找
+                        
                         $candidate++;
                         continue;
                     }
@@ -415,11 +408,11 @@ class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface
             }
 
             if ($candidate >= $currentCid) {
-                return $currentCid; // 没有更小可用位
+                return $currentCid;
             }
 
-            // 更新引用到新cid
-            // comments
+            
+            
             $db->query($db->update('table.comments')->rows(['cid' => $candidate])->where('cid = ?', $currentCid));
             // fields
             $db->query($db->update('table.fields')->rows(['cid' => $candidate])->where('cid = ?', $currentCid));
