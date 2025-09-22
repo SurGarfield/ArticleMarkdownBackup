@@ -18,6 +18,140 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
             // ignore
         }
     }
+
+	/**
+	 * 获取数据库驱动: mysql/pgsql/sqlite
+	 */
+	private function getDbDriver($db)
+	{
+		try {
+			$adapter = $db->getAdapter();
+			$driver = method_exists($adapter, 'getDriver') ? $adapter->getDriver() : '';
+			if (stripos($driver, 'pgsql') !== false) {
+				return 'pgsql';
+			}
+			if (stripos($driver, 'sqlite') !== false) {
+				return 'sqlite';
+			}
+			return 'mysql';
+		} catch (Exception $e) {
+			return 'mysql';
+		}
+	}
+
+	/**
+	 * 获取指定表现有列名（小写）
+	 */
+	private function getTableColumns($db, $table)
+	{
+		$columns = [];
+		$driver = $this->getDbDriver($db);
+		try {
+			if ($driver === 'mysql') {
+				$rows = $db->fetchAll("SHOW COLUMNS FROM `{$table}`");
+				foreach ($rows as $r) {
+					if (isset($r['Field'])) {
+						$columns[strtolower($r['Field'])] = true;
+					}
+				}
+			} elseif ($driver === 'sqlite') {
+				$rows = $db->fetchAll("PRAGMA table_info({$table})");
+				foreach ($rows as $r) {
+					if (isset($r['name'])) {
+						$columns[strtolower($r['name'])] = true;
+					}
+				}
+			} else { // pgsql
+				// 尽量不指定 schema，默认搜索路径处理
+				$rows = $db->fetchAll("SELECT column_name FROM information_schema.columns WHERE table_name = '{$table}'");
+				foreach ($rows as $r) {
+					if (isset($r['column_name'])) {
+						$columns[strtolower($r['column_name'])] = true;
+					}
+				}
+			}
+		} catch (Exception $e) {
+			// ignore, 返回已收集的
+		}
+		return $columns;
+	}
+
+	/**
+	 * 基于备份数据推断列类型
+	 */
+	private function inferColumnTypeFromValues($driver, $values)
+	{
+		$sample = null;
+		foreach ($values as $v) {
+			if ($v === null) { continue; }
+			$sample = $v; break;
+		}
+		if (is_bool($sample)) {
+			return $driver === 'mysql' ? 'TINYINT(1)' : ($driver === 'pgsql' ? 'SMALLINT' : 'INTEGER');
+		}
+		if (is_int($sample) || (is_string($sample) && preg_match('/^-?\\d+$/', $sample))) {
+			return $driver === 'mysql' ? 'INT' : 'INTEGER';
+		}
+		if (is_float($sample) || (is_string($sample) && is_numeric($sample))) {
+			return $driver === 'mysql' ? 'DOUBLE' : ($driver === 'pgsql' ? 'DOUBLE PRECISION' : 'REAL');
+		}
+		// 默认文本，避免长度截断
+		return 'TEXT';
+	}
+
+	/**
+	 * 确保表包含备份数据中的所有列（若不存在则新增）
+	 * @param string $base 表基名，如 contents/comments（不含前缀）
+	 * @param array $rows  备份记录数组
+	 */
+	private function ensureColumnsFromData($db, $base, array $rows)
+	{
+		if (empty($rows)) { return; }
+		$prefix = $db->getPrefix();
+		$table = $prefix . $base;
+		$driver = $this->getDbDriver($db);
+		$existing = $this->getTableColumns($db, $table);
+
+		// 聚合候选列
+		$candidateKeys = [];
+		$valuesPerKey = [];
+		$limit = 100; // 采样最多100条
+		$count = 0;
+		foreach ($rows as $r) {
+			if (!is_array($r)) { continue; }
+			foreach ($r as $k => $v) {
+				$lk = strtolower($k);
+				$candidateKeys[$lk] = $k; // 保留原始大小写名
+				if (!isset($valuesPerKey[$lk])) { $valuesPerKey[$lk] = []; }
+				$valuesPerKey[$lk][] = $v;
+			}
+			$count++;
+			if ($count >= $limit) break;
+		}
+
+		// 不处理主键列，避免冲突
+		if ($base === 'contents') {
+			unset($candidateKeys['cid']);
+		} elseif ($base === 'comments') {
+			unset($candidateKeys['coid']);
+		}
+
+		// 逐列新增缺失字段
+		foreach ($candidateKeys as $lk => $origName) {
+			if (isset($existing[$lk])) { continue; }
+			$type = $this->inferColumnTypeFromValues($driver, isset($valuesPerKey[$lk]) ? $valuesPerKey[$lk] : []);
+			try {
+				if ($driver === 'mysql') {
+					$sql = "ALTER TABLE `{$table}` ADD COLUMN `{$origName}` {$type} NULL";
+				} else {
+					$sql = "ALTER TABLE {$table} ADD COLUMN {$origName} {$type}";
+				}
+				$db->query($sql);
+			} catch (Exception $e) {
+				// 忽略新增失败，继续后续字段
+			}
+		}
+	}
     /**
      * 判断文章是否已经是 Markdown
      * 规则：以 <!--markdown--> 开头，且去掉标记后不再包含 HTML 标签
@@ -281,6 +415,18 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
             
             // 获取数据库实例
             $db = Typecho_Db::get();
+
+            // 恢复前，针对极端环境：确保表包含备份中的字段
+            try {
+                if (isset($backupData['articles']) && is_array($backupData['articles'])) {
+                    $this->ensureColumnsFromData($db, 'contents', $backupData['articles']);
+                }
+                if (isset($backupData['comments']) && is_array($backupData['comments'])) {
+                    $this->ensureColumnsFromData($db, 'comments', $backupData['comments']);
+                }
+            } catch (Exception $e) {
+                // 忽略结构兼容异常，不阻断恢复
+            }
             
             // 恢复文章数据
             foreach ($backupData['articles'] as $article) {
