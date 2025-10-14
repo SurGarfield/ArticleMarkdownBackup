@@ -4,7 +4,7 @@
  * 
  * @package Article Markdown Backup
  * @author 森木志
- * @version 1.2.3
+ * @version 1.2.4
  * @link https://oxxx.cn
  */
 class ArticleMarkdownBackup_Plugin implements Typecho_Plugin_Interface

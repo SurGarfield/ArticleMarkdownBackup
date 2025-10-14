@@ -714,6 +714,12 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
         $do = $this->request->get('do');
         
         switch ($do) {
+			case 'restoreInit':
+				$this->restoreInitAjax();
+				break;
+			case 'restoreStep':
+				$this->restoreStepAjax();
+				break;
             case 'backupAll':
                 $this->backupAll();
                 break;
@@ -755,6 +761,195 @@ class ArticleMarkdownBackup_Action extends Typecho_Widget implements Widget\Acti
                 break;
         }
     }
+
+	/**
+	 * 生成并返回一个JSON响应后立即退出
+	 */
+	private function jsonResponse($data)
+	{
+		@header('Content-Type: application/json; charset=utf-8');
+		echo json_encode($data, JSON_UNESCAPED_UNICODE);
+		exit;
+	}
+
+	/**
+	 * 计算还原进度状态文件路径
+	 */
+	private function getRestoreStatePath($jobId)
+	{
+		$stateDir = __DIR__ . DIRECTORY_SEPARATOR . 'backups';
+		if (!is_dir($stateDir)) {
+			@mkdir($stateDir, 0755, true);
+		}
+		return $stateDir . DIRECTORY_SEPARATOR . ('restore_state_' . preg_replace('/[^a-zA-Z0-9_\-]/', '', $jobId) . '.json');
+	}
+
+	/**
+	 * 恢复初始化（AJAX）：返回任务ID与总数
+	 */
+	public function restoreInitAjax()
+	{
+		try {
+			$backupFile = $this->request->get('backup_file');
+			if (!empty($backupFile)) {
+				$filepath = __DIR__ . '/backups/' . $backupFile;
+				if (!file_exists($filepath)) {
+					return $this->jsonResponse(['success' => false, 'message' => '指定的备份文件不存在']);
+				}
+			} else {
+				$backupDir = __DIR__ . '/backups/';
+				if (!is_dir($backupDir)) {
+					return $this->jsonResponse(['success' => false, 'message' => '备份目录不存在']);
+				}
+				$backupFiles = glob($backupDir . 'AMD_backup_*.json');
+				if (empty($backupFiles)) {
+					return $this->jsonResponse(['success' => false, 'message' => '未找到备份文件']);
+				}
+				usort($backupFiles, function($a, $b) { return filemtime($b) - filemtime($a); });
+				$filepath = $backupFiles[0];
+			}
+
+			$content = @file_get_contents($filepath);
+			$data = $content !== false ? json_decode($content, true) : null;
+			if (!$data || !isset($data['articles']) || !isset($data['comments'])) {
+				return $this->jsonResponse(['success' => false, 'message' => '备份文件格式错误']);
+			}
+
+			$articlesTotal = is_array($data['articles']) ? count($data['articles']) : 0;
+			$commentsTotal = is_array($data['comments']) ? count($data['comments']) : 0;
+			$total = $articlesTotal + $commentsTotal;
+			$jobId = bin2hex(random_bytes(6));
+			$state = [
+				'filepath' => $filepath,
+				'articlesTotal' => $articlesTotal,
+				'commentsTotal' => $commentsTotal,
+				'aIndex' => 0,
+				'cIndex' => 0,
+				'ensureDone' => false,
+				'createdAt' => time()
+			];
+			@file_put_contents($this->getRestoreStatePath($jobId), json_encode($state));
+
+			return $this->jsonResponse([
+				'success' => true,
+				'jobId' => $jobId,
+				'articlesTotal' => $articlesTotal,
+				'commentsTotal' => $commentsTotal,
+				'total' => $total
+			]);
+		} catch (Exception $e) {
+			return $this->jsonResponse(['success' => false, 'message' => '初始化失败: ' . $e->getMessage()]);
+		}
+	}
+
+	/**
+	 * 执行一步恢复（AJAX）：按批处理并返回当前进度
+	 */
+	public function restoreStepAjax()
+	{
+		@set_time_limit(0);
+		$jobId = $this->request->get('jobId');
+		$batchSize = intval($this->request->get('batchSize'));
+		if ($batchSize <= 0) { $batchSize = 200; }
+		$statePath = $this->getRestoreStatePath($jobId);
+		if (!$jobId || !is_file($statePath)) {
+			return $this->jsonResponse(['success' => false, 'message' => '任务不存在或已过期']);
+		}
+
+		$state = json_decode(@file_get_contents($statePath), true);
+		if (!is_array($state) || empty($state['filepath'])) {
+			return $this->jsonResponse(['success' => false, 'message' => '任务状态损坏']);
+		}
+
+		$content = @file_get_contents($state['filepath']);
+		$data = $content !== false ? json_decode($content, true) : null;
+		if (!$data || !isset($data['articles']) || !isset($data['comments'])) {
+			return $this->jsonResponse(['success' => false, 'message' => '备份文件无法读取']);
+		}
+
+		$articles = is_array($data['articles']) ? $data['articles'] : [];
+		$comments = is_array($data['comments']) ? $data['comments'] : [];
+		$articlesTotal = intval($state['articlesTotal']);
+		$commentsTotal = intval($state['commentsTotal']);
+		$aIndex = intval($state['aIndex']);
+		$cIndex = intval($state['cIndex']);
+
+		$db = Typecho_Db::get();
+		$adapter = $db->getAdapter();
+		$driver = method_exists($adapter, 'getDriver') ? $adapter->getDriver() : '';
+
+		// 首步确保字段
+		if (empty($state['ensureDone'])) {
+			try {
+				if ($articlesTotal > 0) { $this->ensureColumnsFromData($db, 'contents', $articles); }
+				if ($commentsTotal > 0) { $this->ensureColumnsFromData($db, 'comments', $comments); }
+				$state['ensureDone'] = true;
+				@file_put_contents($statePath, json_encode($state));
+			} catch (Exception $e) {
+				// 忽略结构异常
+			}
+		}
+
+		$processed = 0;
+		try {
+			// 可选关闭外键检查以提升性能
+			if (stripos($driver, 'mysql') !== false) {
+				try { $db->query('SET FOREIGN_KEY_CHECKS=0'); } catch (Exception $e) {}
+			}
+			// 开启事务
+			try { $db->query('START TRANSACTION'); } catch (Exception $e) {}
+
+			// 先处理文章，再处理评论
+			while ($processed < $batchSize && $aIndex < $articlesTotal) {
+				$article = $articles[$aIndex];
+				$existing = $db->fetchRow($db->select()->from('table.contents')->where('cid = ?', $article['cid']));
+				if ($existing) {
+					$updateData = $article; unset($updateData['cid']);
+					$db->query($db->update('table.contents')->rows($updateData)->where('cid = ?', $article['cid']));
+				} else {
+					$db->query($db->insert('table.contents')->rows($article));
+				}
+				$aIndex++; $processed++;
+			}
+			while ($processed < $batchSize && $cIndex < $commentsTotal) {
+				$comment = $comments[$cIndex];
+				$existing = $db->fetchRow($db->select()->from('table.comments')->where('coid = ?', $comment['coid']));
+				if ($existing) {
+					$updateData = $comment; unset($updateData['coid']);
+					$db->query($db->update('table.comments')->rows($updateData)->where('coid = ?', $comment['coid']));
+				} else {
+					$db->query($db->insert('table.comments')->rows($comment));
+				}
+				$cIndex++; $processed++;
+			}
+
+			try { $db->query('COMMIT'); } catch (Exception $e) {}
+		} catch (Exception $e) {
+			try { $db->query('ROLLBACK'); } catch (Exception $e2) {}
+			return $this->jsonResponse(['success' => false, 'message' => '执行失败: ' . $e->getMessage()]);
+		}
+
+		$state['aIndex'] = $aIndex;
+		$state['cIndex'] = $cIndex;
+		@file_put_contents($statePath, json_encode($state));
+
+		$done = ($aIndex >= $articlesTotal) && ($cIndex >= $commentsTotal);
+		$completed = $aIndex + $cIndex;
+		$total = $articlesTotal + $commentsTotal;
+		$percent = $total > 0 ? floor($completed * 100 / $total) : 100;
+
+		if ($done) { @unlink($statePath); }
+
+		return $this->jsonResponse([
+			'success' => true,
+			'done' => $done,
+			'processed' => $completed,
+			'total' => $total,
+			'percent' => $percent,
+			'articles' => ['done' => $aIndex, 'total' => $articlesTotal],
+			'comments' => ['done' => $cIndex, 'total' => $commentsTotal]
+		]);
+	}
 
     /**
      * 清空插件日志动作

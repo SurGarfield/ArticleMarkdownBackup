@@ -521,7 +521,7 @@ if (is_file($logFile)) {
                                         <!-- 恢复文章数据 -->
                                         <section class="typecho-page-options widget">
                                             <h3><?php _e('恢复文章数据'); ?></h3>
-                                            <form method="post" action="<?php echo $security->index('/action/article_markdown_backup?do=restore'); ?>">
+                                            <form id="restore-form" method="post" action="<?php echo $security->index('/action/article_markdown_backup?do=restore'); ?>">
                                                 <ul class="typecho-option">
                                                     <li>
                                                         <select name="backup_file" class="w-100">
@@ -532,7 +532,7 @@ if (is_file($logFile)) {
                                                         </select>
                                                     </li>
                                                     <li>
-                                                        <button type="submit" class="btn btn-s btn-block" onclick="return confirm('<?php _e('确定要恢复文章数据吗？'); ?>')"><?php _e('恢复'); ?></button>
+                                                        <button id="restore-start-btn" type="button" class="btn btn-s btn-block"><?php _e('恢复'); ?></button>
                                                     </li>
                                                 </ul>
                                             </form>
@@ -750,4 +750,98 @@ $(document).ready(function() {
 $(document).ready(function() {
     $('.pagination a.page-navigator').removeAttr('target').removeAttr('rel');
 });
+</script>
+
+<style>
+.amd-modal-mask { position: fixed; top:0; left:0; right:0; bottom:0; background: rgba(0,0,0,.35); z-index: 9998; display:none; }
+.amd-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background:#fff; padding:16px; width: 360px; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.2); z-index: 9999; display:none; }
+.amd-modal h4 { margin: 0 0 10px; font-size: 16px; text-align:center; }
+.amd-progress { width:100%; height: 10px; background:#f0f0f0; border-radius: 5px; overflow:hidden; }
+.amd-progress-bar { height:100%; width:0%; background:#3a3a3a; transition: width .2s ease; }
+.amd-meta { margin:8px 0; font-size:12px; color:#555; text-align:center; }
+.amd-actions { margin-top:12px; text-align:center; }
+.amd-actions .btn { margin: 0 6px; }
+</style>
+
+<div id="amd-modal-mask" class="amd-modal-mask"></div>
+<div id="amd-modal" class="amd-modal">
+    <h4>正在恢复，请稍候...</h4>
+    <div class="amd-progress"><div id="amd-progress-bar" class="amd-progress-bar"></div></div>
+    <div id="amd-progress-text" class="amd-meta">0 / 0 (0%)</div>
+    <div id="amd-detail-text" class="amd-meta">文章 0/0，评论 0/0</div>
+    <div class="amd-actions">
+        <button id="amd-cancel-btn" class="btn">取消</button>
+    </div>
+    <div id="amd-error" class="amd-meta" style="color:#d4380d; display:none;"></div>
+    <div id="amd-success" class="amd-meta" style="color:#389e0d; display:none;">恢复完成</div>
+    <div class="amd-actions" id="amd-done-actions" style="display:none;">
+        <a class="btn primary" href="<?php echo $panelBaseUrl; ?>&tab=backup">返回</a>
+    </div>
+    <input type="hidden" id="amd-jobId" value="" />
+</div>
+
+<script>
+(function(){
+    var restoring = false;
+    var stopped = false;
+    var timer = null;
+    var batchSize = 300;
+    var urls = {
+        init: '<?php echo $security->index('/action/article_markdown_backup?do=restoreInit'); ?>',
+        step: '<?php echo $security->index('/action/article_markdown_backup?do=restoreStep'); ?>'
+    };
+
+    function showModal(){ $('#amd-modal-mask').show(); $('#amd-modal').show(); }
+    function hideModal(){ $('#amd-modal-mask').hide(); $('#amd-modal').hide(); }
+    function setProgress(percent, processed, total, aDone, aTotal, cDone, cTotal){
+        $('#amd-progress-bar').css('width', Math.max(0, Math.min(100, percent)) + '%');
+        $('#amd-progress-text').text(processed + ' / ' + total + ' (' + percent + '%)');
+        $('#amd-detail-text').text('文章 ' + aDone + '/' + aTotal + '，评论 ' + cDone + '/' + cTotal);
+    }
+    function setError(msg){ $('#amd-error').text(msg).show(); }
+    function clearError(){ $('#amd-error').hide().text(''); }
+    function setSuccess(){ $('#amd-success').show(); $('#amd-done-actions').show(); }
+
+    function startSteps(jobId){
+        if (stopped) return;
+        $.ajax({
+            url: urls.step,
+            method: 'POST',
+            dataType: 'json',
+            data: { jobId: jobId, batchSize: batchSize },
+            success: function(res){
+                if (!res || !res.success){ setError((res && res.message) ? res.message : '恢复失败'); restoring=false; return; }
+                setProgress(res.percent, res.processed, res.total, res.articles.done, res.articles.total, res.comments.done, res.comments.total);
+                if (res.done){ setSuccess(); restoring=false; return; }
+                timer = setTimeout(function(){ startSteps(jobId); }, 150);
+            },
+            error: function(){ setError('网络错误'); restoring=false; }
+        });
+    }
+
+    $('#restore-start-btn').on('click', function(){
+        if (restoring) return;
+        var file = $('#restore-form select[name="backup_file"]').val();
+        if (!confirm('<?php _e('确定要恢复文章数据吗？'); ?>')) return;
+        restoring = true; stopped = false; clearError(); setProgress(0,0,0,0,0,0,0); $('#amd-success').hide(); $('#amd-done-actions').hide();
+        showModal();
+        $.ajax({
+            url: urls.init,
+            method: 'POST',
+            dataType: 'json',
+            data: { backup_file: file },
+            success: function(res){
+                if (!res || !res.success){ setError((res && res.message) ? res.message : '初始化失败'); restoring=false; return; }
+                $('#amd-jobId').val(res.jobId);
+                setProgress(0, 0, res.total, 0, res.articlesTotal, 0, res.commentsTotal);
+                startSteps(res.jobId);
+            },
+            error: function(){ setError('网络错误'); restoring=false; }
+        });
+    });
+
+    $('#amd-cancel-btn').on('click', function(){
+        stopped = true; restoring = false; if (timer) { clearTimeout(timer); timer = null; } hideModal();
+    });
+})();
 </script>
